@@ -245,20 +245,40 @@ Below is a Mermaid diagram illustrating the architecture of the `audit` package:
 
 ```mermaid
 graph TD
-    A[Client Application] -->|Publish| B[Bus]
+    %% Core data path
+    A[Client Application] -->|Publish / Sync / Timeout| B[Bus]
     B -->|Queue| C[Event Queue]
     C -->|Dispatch| D[Worker Pool]
-    D -->|Process| E[Handlers]
-    B -->|Store| F[History Buffer]
-    B -->|Spill| G[Spillover Handler]
-    G -->|Write| H[Disk \(spillover.log\)]
-    G -->|Recover| B
-    B -->|Send| I[Transport \(e.g., Kafka\)]
-    B -->|Record| J[Metrics]
-    J -->|Export| K[Prometheus]
-    B -->|Validate| L[Schema Registry]
-    B -->|Sanitize/Encrypt| M[Security Module]
-    F -->|Access| N[Access Control]
+    D -->|Invoke| E[Handlers]
+
+    %% Supporting subsystems
+    B -->|Record| F[History Buffer]
+    B -->|Spill on Drop| G[Spillover Handler]
+    G -->|Write| H[Disk Spillover Log]
+    B -->|RecoverSpillover| G
+
+    %% Security and validation
+    B -->|Sanitize| I[Sanitizer - email and password]
+    B -->|Validate| J[Schema Registry]
+    B -->|Encrypt| K[AES Encryption]
+
+    %% Observability
+    B -->|Track| L[Prometheus Metrics]
+    L -->|Expose| M[Prometheus Server]
+
+    %% Distributed forwarding
+    B -->|Forward| N[Kafka Transport]
+
+    %% Logging
+    B -->|Emit| O[Logger API]
+    O -->|Write| P[Rotated File Log]
+    O -->|Batch| Q[Database Writer]
+
+    %% Access control
+    F -->|History Access| R[Access Control Func]
+
+    %% Configuration
+    S[Environment Config] -->|WithOptions / LoadConfigFromEnv| B
 ```
 
 ## License
