@@ -251,9 +251,9 @@ graph TD
     D -->|Process| E[Handlers]
     B -->|Store| F[History Buffer]
     B -->|Spill| G[Spillover Handler]
-    G -->|Write| H[Disk (spillover.log)]
+    G -->|Write| H[Disk \(spillover.log\)]
     G -->|Recover| B
-    B -->|Send| I[Transport (e.g., Kafka)]
+    B -->|Send| I[Transport \(e.g., Kafka\)]
     B -->|Record| J[Metrics]
     J -->|Export| K[Prometheus]
     B -->|Validate| L[Schema Registry]
