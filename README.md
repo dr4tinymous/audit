@@ -1,6 +1,6 @@
 # Audit Package
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/yourusername/audit.svg)](https://pkg.go.dev/github.com/yourusername/audit)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dr4tinymous/audit.svg)](https://pkg.go.dev/github.com/dr4tinymous/audit)
 [![Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 
 The `audit` package is a robust, in-memory publish-subscribe bus designed for managing and processing audit events in Go applications. It provides high-throughput, low-latency event processing with features for resilience, observability, and data integrity. The package supports asynchronous event delivery, historical event storage, disk spillover, rate limiting, circuit breaking, metrics integration, and secure event handling.
@@ -56,7 +56,7 @@ The `audit` package is built around the `Bus` struct, which manages event publis
 To use the `audit` package, ensure you have Go installed. Then, import the package into your project:
 
 ```bash
-go get github.com/yourusername/audit
+go get github.com/dr4tinymous/audit
 ```
 
 Ensure dependencies like `github.com/google/uuid`, `go.opentelemetry.io/otel/trace`, `golang.org/x/time/rate`, `github.com/IBM/sarama`, `github.com/natefinch/lumberjack`, and `github.com/prometheus/client_golang/prometheus` are installed.
@@ -74,7 +74,7 @@ import (
 	"log"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/yourusername/audit"
+	"github.com/dr4tinymous/audit"
 )
 
 func main() {
@@ -109,7 +109,7 @@ Publish an event, such as a user login:
 ```go
 import (
 	"context"
-	"github.com/yourusername/audit"
+	"github.com/dr4tinymous/audit"
 )
 
 func main() {
@@ -129,7 +129,7 @@ Set up file and database logging:
 import (
 	"database/sql"
 	"log"
-	"github.com/yourusername/audit"
+	"github.com/dr4tinymous/audit"
 	_ "modernc.org/sqlite"
 )
 
