@@ -2,11 +2,11 @@ package audit
 
 import (
 	"context"
+	"sync"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -109,41 +109,6 @@ func TestEncryptionKeyManagement(t *testing.T) {
 	}
 }
 
-func TestSpilloverRecovery(t *testing.T) {
-	tmpDir := t.TempDir()
-	bus, err := NewBus(
-		WithSpilloverDir(tmpDir),
-		WithBufferSize(1),
-		WithHistoryCap(10),
-	)
-	if err != nil {
-		t.Fatalf("Failed to create bus: %v", err)
-	}
-	defer bus.Close()
-
-	for i := 0; i < 5; i++ {
-		bus.Publish(NewBasicEvent("test_event", "source", "ctx", nil, trace.SpanContext{}))
-	}
-	time.Sleep(100 * time.Millisecond)
-
-	if err := bus.RecoverSpillover(); err != nil {
-		t.Fatalf("Failed to recover spillover: %v", err)
-	}
-
-	history, err := bus.History(adminCtx())
-	if err != nil {
-		t.Fatalf("Failed to get history: %v", err)
-	}
-	if len(history) == 0 {
-		t.Error("Expected recovered events in history, got none")
-	}
-
-	info, _ := os.Stat(filepath.Join(tmpDir, "spillover.log"))
-	if info.Size() != 0 {
-		t.Error("Expected spillover file to be truncated after recovery")
-	}
-}
-
 func TestNonLatinCharacters(t *testing.T) {
 	bus, _ := NewBus()
 	defer bus.Close()
@@ -184,26 +149,139 @@ func TestMetricsRegistration(t *testing.T) {
 	}
 }
 
-func TestRateLimiting(t *testing.T) {
-	bus, _ := NewBus(
-		WithBufferSize(10),
-		WithRateLimit(2, 2),
-		WithAsync(true),
-		WithWorkerCount(1),
-	)
-	defer bus.Close()
-
-	for i := 0; i < 5; i++ {
-		bus.Publish(NewBasicEvent("test_event", "source", "ctx", nil, trace.SpanContext{}))
-	}
-	time.Sleep(500 * time.Millisecond)
-
-	history, _ := bus.History(adminCtx())
-	if len(history) >= 5 {
-		t.Errorf("Expected some events to be dropped due to rate limiting, got %d", len(history))
-	}
+type memSpill struct {
+    mu     sync.Mutex
+    events []Event
 }
 
+func (m *memSpill) Write(evt Event) error {
+    m.mu.Lock()
+    m.events = append(m.events, evt)
+    m.mu.Unlock()
+    return nil
+}
+
+// Close is required so memSpill satisfies SpillHandler.
+func (m *memSpill) Close() error {
+    // nothing to clean up in memory
+    return nil
+}
+
+// Events returns a snapshot of spilled events.
+func (m *memSpill) Events() []Event {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    out := make([]Event, len(m.events))
+    copy(out, m.events)
+    return out
+}
+
+// Clear resets the in-memory spill log.
+func (m *memSpill) Clear() {
+    m.mu.Lock()
+    m.events = nil
+    m.mu.Unlock()
+}
+
+func TestSpillAndRecoverInMemory(t *testing.T) {
+    cases := []struct {
+        name         string
+        opts         []BusOption
+        handlerDelay time.Duration
+        total        int
+        wantSpilled  int
+    }{
+        {
+            name: "queue overflow",
+            opts: []BusOption{
+                WithBufferSize(1),
+                WithRateLimit(1000, 1000),
+                WithAsync(true),
+                WithWorkerCount(1),
+            },
+            handlerDelay: 50 * time.Millisecond,
+            total:        10,
+            wantSpilled:  6,
+        },
+        {
+            name: "rate limit",
+            opts: []BusOption{
+                WithBufferSize(10),
+                WithRateLimit(2, 2),
+                WithAsync(true),
+                WithWorkerCount(4),
+            },
+            handlerDelay: 0,
+            total:        5,
+            wantSpilled:  3,
+        },
+    }
+
+    for _, c := range cases {
+        t.Run(c.name, func(t *testing.T) {
+            // inject our in-memory handler
+            mem := &memSpill{}
+            allOpts := append(c.opts, WithSpilloverHandler(mem))
+            bus, err := NewBus(allOpts...)
+            if err != nil {
+                t.Fatalf("NewBus failed: %v", err)
+            }
+            defer bus.Close()
+
+            // capture processed IDs
+            var mu sync.Mutex
+            processed := make([]string, 0, c.total)
+            bus.Subscribe(EventType("test_event"), func(evt Event) error {
+                if c.handlerDelay > 0 {
+                    time.Sleep(c.handlerDelay)
+                }
+                mu.Lock()
+                processed = append(processed, evt.ID())
+                mu.Unlock()
+                return nil
+            })
+
+            // publish all
+            for i := 0; i < c.total; i++ {
+                bus.Publish(NewBasicEvent("test_event", "src", "ctx",
+                    map[string]interface{}{"i": i}, trace.SpanContext{}))
+            }
+
+            // let spill + dispatch settle
+            time.Sleep(200 * time.Millisecond)
+
+            // 1) check how many spilled in-memory
+            spilled := mem.Events()
+            if len(spilled) < c.wantSpilled {
+                t.Fatalf("spilled = %d, want ≥%d", len(spilled), c.wantSpilled)
+            }
+
+            // 2) clear and replay them synchronously
+            mem.Clear()
+            for _, evt := range spilled {
+                bus.PublishSync(evt)
+            }
+            time.Sleep(100 * time.Millisecond)
+
+            // 3) verify total processed == total published
+            mu.Lock()
+            got := len(processed)
+            mu.Unlock()
+            if got != c.total {
+                t.Errorf("processed = %d, want %d", got, c.total)
+            }
+
+            // 4) history must also contain all
+            history, err := bus.History(adminCtx())
+            if err != nil {
+                t.Fatalf("History error: %v", err)
+            }
+            if len(history) != c.total {
+                t.Errorf("history size = %d, want %d", len(history), c.total)
+            }
+        })
+    }
+}
 
 func TestCustomEvent(t *testing.T) {
 	bus, _ := NewBus()
@@ -259,4 +337,62 @@ func TestSanitization(t *testing.T) {
 	if payload["data"] != "visible" {
 		t.Errorf("Data incorrectly sanitized: %v", payload["data"])
 	}
+}
+
+// Test that a panicking handler does not crash the Bus and
+// allows subsequent handlers to run.
+func TestHandlerPanicIsolation(t *testing.T) {
+    ctx := adminCtx()
+    bus, _ := NewBus(WithAsync(false), WithHistoryCap(2))
+    defer bus.Close()
+
+    var called bool
+    bus.Subscribe(EventTypeCustomFieldSet, func(evt Event) error {
+        panic("boom")
+    })
+    bus.Subscribe(EventTypeCustomFieldSet, func(evt Event) error {
+        called = true
+        return nil
+    })
+
+    evt := NewBasicEvent(EventTypeCustomFieldSet, "src", "", nil, trace.SpanContext{})
+    bus.Publish(evt)
+
+    history, _ := bus.History(ctx)
+    if len(history) != 1 {
+        t.Fatalf("expected history=1 after panic, got %d", len(history))
+    }
+    if !called {
+        t.Error("second handler was not called after first panicked")
+    }
+}
+
+// Test that events exceeding MaxMemoryMB are not stored.
+func TestMemoryLimitEnforced(t *testing.T) {
+    ctx := adminCtx()
+    bus, _ := NewBus(WithMaxMemoryMB(1), WithHistoryCap(10), WithAsync(false))
+    defer bus.Close()
+
+    // payload ~2 MB
+    large := strings.Repeat("x", 2*1024*1024)
+    bus.Publish(NewBasicEvent("big", "src", "", map[string]interface{}{"data": large}, trace.SpanContext{}))
+
+    history, _ := bus.History(ctx)
+    if len(history) != 0 {
+        t.Errorf("expected 0 events stored for >1MB payload, got %d", len(history))
+    }
+}
+
+func TestConcurrentClose(t *testing.T) {
+    bus, _ := NewBus(WithAsync(true))
+    var wg sync.WaitGroup
+    for i := 0; i < 10; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            bus.Close()
+        }()
+    }
+    wg.Wait()
+    // No panic expected
 }

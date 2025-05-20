@@ -1,35 +1,41 @@
 graph TD
-    %% Core data path
-    A[Client Application] -->|Publish / Sync / Timeout| B[Bus]
-    B -->|Queue| C[Event Queue]
-    C -->|Dispatch| D[Worker Pool]
-    D -->|Invoke| E[Handlers]
+	%% Core data path
+	A[Client Application] -->|Publish / Sync / Timeout| B[Bus]
+	B -->|Queue| C[Event Queue]
+	C -->|Dispatch| D[Worker Pool]
+	D -->|Invoke| E[Handlers]
 
-    %% Supporting subsystems
-    B -->|Record| F[History Buffer]
-    B -->|Spill on Drop| G[Spillover Handler]
-    G -->|Write| H[Disk Spillover Log]
-    B -->|RecoverSpillover| G
+	%% Supporting subsystems
+	B -->|Record| F[History Buffer]
+	B -->|Spill on Drop| G[Spillover Handler]
+	G -->|Write| H[Disk Spillover Log]
+	G -->|Recover| B
 
-    %% Security and validation
-    B -->|Sanitize| I[Sanitizer - email and password]
-    B -->|Validate| J[Schema Registry]
-    B -->|Encrypt| K[AES Encryption]
+	%% Security and validation
+	B -->|Sanitize| I[Sanitizer]
+	B -->|Validate| J[Schema Registry]
+	B -->|Encrypt| K[AES-256 GCM Encryption]
 
-    %% Observability
-    B -->|Track| L[Prometheus Metrics]
-    L -->|Expose| M[Prometheus Server]
+	%% Observability
+	B -->|Track| L[Prometheus Metrics]
+	L -->|Expose| M[Prometheus Server]
 
-    %% Distributed forwarding
-    B -->|Forward| N[Kafka Transport]
+	%% Distributed forwarding
+	B -->|Forward| N[Kafka Transport]
 
-    %% Logging
-    B -->|Emit| O[Logger API]
-    O -->|Write| P[Rotated File Log]
-    O -->|Batch| Q[Database Writer]
+	%% Logging
+	B -->|Emit| O[Logger API]
+	O -->|Write| P[Rotated File Log]
+	O -->|Batch| Q[SQL Database]
 
-    %% Access control
-    F -->|History Access| R[Access Control Func]
+	%% Access control
+	F -->|History Access| R[Access Control Func]
 
-    %% Configuration
-    S[Environment Config] -->|WithOptions / LoadConfigFromEnv| B
+	%% Configuration
+	S[Environment Config] -->|LoadConfigFromEnv| B
+
+	%% Version watermark
+	subgraph Version
+		V[v0.2.0]
+	end
+	style V fill:#f9f,stroke:#333,stroke-width:2px
