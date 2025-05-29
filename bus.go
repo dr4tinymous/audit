@@ -870,11 +870,8 @@ func (b *Bus) recordHistory(evt Event) {
 // Returns:
 //   - bool: True if the event can be stored, false otherwise.
 func (b *Bus) canStoreEvent(evt Event) bool {
-	size := estimateEventSize(evt)
-	if atomic.LoadInt64(&b.memoryUsed)+size > b.memoryLimit {
-		return false
-	}
-	return true
+    size := estimateEventSize(evt)
+    return atomic.LoadInt64(&b.memoryUsed)+size <= b.memoryLimit
 }
 
 // SpillHandler defines the interface for handling event spillover.
@@ -904,10 +901,12 @@ type SpillHandler interface {
 // Parameters:
 //   - evt: The event to spill.
 func (b *Bus) spillEvent(evt Event) {
-	if b.spillover != nil {
-		log.Printf("audit.Bus: Spilling event ID %s", evt.ID())
-		_ = b.spillover.Write(evt)
-	}
+    if b.spillover != nil {
+        log.Printf("audit.Bus: Spilling event ID %s", evt.ID())
+        if err := b.spillover.Write(evt); err != nil {
+            b.errorFunc(fmt.Errorf("failed to spill event: %w", err), evt)
+        }
+    }
 }
 
 // shouldSample determines if an event should be sampled based on the sampling rate.
